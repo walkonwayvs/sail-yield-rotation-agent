@@ -4,6 +4,8 @@ The `sailor-cambrian-yield` skill and a reference implementation for a USDC yiel
 whichever lending venue pays the best supply rate, decide from an off-chain rate feed, and move
 only when the improvement is worth the gas.
 
+Built with [Sailor](https://github.com/sail-money/Sailor), the open-source agent harness for [Sail Protocol](https://github.com/sail-money/Protocol).
+
 Built and run live on Base against Aave v3, Morpho and Euler, with rate data from
 [Cambrian](https://docs.cambrian.org). The live agent is private; this is the skill file and a
 stripped reference implementation.
