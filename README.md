@@ -1,6 +1,6 @@
-# sailor-cambrian-yield
+# sail-yield-rotation-agent
 
-A Sailor skill and reference implementation for a USDC yield-rotation agent: hold a position in
+The `sailor-cambrian-yield` skill and a reference implementation for a USDC yield-rotation agent: hold a position in
 whichever lending venue pays the best supply rate, decide from an off-chain rate feed, and move
 only when the improvement is worth the gas.
 
