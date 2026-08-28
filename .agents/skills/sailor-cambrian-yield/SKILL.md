@@ -286,6 +286,32 @@ A venue that has only ever been tested is a venue you will discover on the day i
 matters. If that means going live with fewer venues than you planned, go live with
 fewer venues.
 
+### Use Shipyard for this, not a hand-rolled fork test
+
+Sailor ships a sandbox for exactly this question, and I did not use it. That was the
+mistake behind everything above.
+
+`sailor sandbox start` (alias `sailor shipyard`) forks the chains locally with anvil and
+runs a second dashboard against the real deployed kernel, the real permission templates,
+and real chain state at the fork block — with fake money. Its own docs put it plainly:
+what passes in Shipyard is what the kernel would allow on mainnet, and a dispatch the
+kernel would deny on mainnet is denied there for the same reason. It answers "does my
+mandate permit what I think it permits", which is the question a hand-rolled fork test
+cannot answer, because that test calls the venue directly and never touches the kernel.
+
+Needs Foundry; `sailor doctor` tells you whether anvil is on PATH. State lives under
+`.shipyard/`, entirely separate from `.sail/`, which means the live side reports an empty
+project while you are working in there. That is expected, not a fault.
+
+What it still cannot tell you: the market does not move on its own, so it answers nothing
+about drawdowns or anyone else's order flow. For a mandate question that does not matter.
+For a strategy question it matters completely.
+
+**Take every venue through Shipyard end to end before it holds real capital.** Deposit,
+withdraw, both legs, every venue — including the ones your strategy is unlikely to pick.
+The fixture replay above is still worth having, since it catches unit and encoding bugs
+early and cheaply. It is not a substitute for a dispatch through the kernel.
+
 
 ## Part 5 — operating notes
 
@@ -325,6 +351,7 @@ Reported separately; noted here so nobody loses an hour to them.
 - [ ] Reconciler classifies by selector; a deposit is never labelled a rotation
 - [ ] Fork test replays the agent's own calldata and asserts on the amount received
 - [ ] Every venue covered on both legs, including ones you do not currently hold
+- [ ] Every venue taken through Shipyard end to end — deposit and withdraw, through the kernel
 - [ ] Every venue proven by a real dispatch in both directions, not only on a fork
 - [ ] Debug logging stripped
 - [ ] Service restarted after the last code change
