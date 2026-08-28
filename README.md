@@ -74,6 +74,13 @@ runs them against a live read, and writes the resulting calldata to JSON. The fo
 those exact bytes. The fixture *is* the agent's output, so the test can't pass while the agent is
 broken.
 
+**And a fork test is not a dispatch.** Everything above hardens the calldata; none of it
+proves the venue accepts that calldata through the permission. One of the three venues
+here passed the fixture replay, passed a live on-chain identity check, and then reverted
+on the first real rotation. The withdraw leg had already gone through, so the capital
+landed idle in the SMA until it was redeployed. That venue is disabled in the reference
+until the cause is understood.
+
 Full detail, with the code, in [the skill file](.agents/skills/sailor-cambrian-yield/SKILL.md).
 
 ## Using the reference implementation

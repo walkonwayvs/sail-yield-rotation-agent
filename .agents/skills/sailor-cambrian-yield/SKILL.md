@@ -73,6 +73,13 @@ address into the mandate, and nothing downstream complains. Verify by calling `a
 address you extracted and confirming it returns the token you expect, before it reaches a
 permission config.
 
+Verifying an address this way proves **identity**, not **usability**. `asset()`
+returning the token you expect tells you the vault is what it claims to be. It
+tells you nothing about whether the vault will accept the deposit your permission
+template actually sends. Those are different questions and the second one is the
+one that spends gas.
+
+
 ### Some rows are corrupt, and they are always the most attractive ones
 
 `supplyApy` is a decimal — `0.0442` means 4.42%. Small Morpho USDC vaults on Base returned
@@ -257,6 +264,29 @@ The venue you are not currently in is exactly the one the next rotation moves to
 The fixture is block-specific, since accrual shifts the position between blocks. Regenerate
 before running.
 
+### And a fork test still is not a dispatch
+
+Everything above hardens the calldata. None of it proves the venue will accept that
+calldata *through the permission*.
+
+A fork test deals itself a balance and pranks the SMA, so it calls the vault directly.
+The live path goes through the Sail kernel, which is a different caller in a different
+context. Sail's own `mandate simulate` is closer but still off-chain, and on a proxied
+vault it reports a false negative: it scans the proxy's bytecode, finds no selectors
+there, and warns that the function does not exist.
+
+This is not hypothetical. On this build, one of three venues passed the fixture replay,
+passed a live `asset()` check, and then reverted on the first real rotation with an
+inner ERC-20 allowance error, from a batch byte-for-byte identical in shape to the venue
+that works. The withdraw leg had already succeeded, so the capital landed idle in the
+SMA. Cause still unresolved at time of writing; that venue is disabled.
+
+**Treat a venue as unproven until real funds have moved through it in both directions.**
+A venue that has only ever been tested is a venue you will discover on the day it
+matters. If that means going live with fewer venues than you planned, go live with
+fewer venues.
+
+
 ## Part 5 — operating notes
 
 **Anything the agent prints goes into the Sail dashboard.** `sailor` pipes the agent's stdout
@@ -295,5 +325,6 @@ Reported separately; noted here so nobody loses an hour to them.
 - [ ] Reconciler classifies by selector; a deposit is never labelled a rotation
 - [ ] Fork test replays the agent's own calldata and asserts on the amount received
 - [ ] Every venue covered on both legs, including ones you do not currently hold
+- [ ] Every venue proven by a real dispatch in both directions, not only on a fork
 - [ ] Debug logging stripped
 - [ ] Service restarted after the last code change
