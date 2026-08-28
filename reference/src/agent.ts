@@ -34,6 +34,12 @@ const EULER_VAULT: Address = requireEnv("EULER_VAULT_ADDRESS") as Address; // ER
 const VENUES: { id: "aave" | "morpho" | "euler"; name: string; addr: Address; kind: "aave" | "erc4626" }[] = [
   { id: "aave", name: "Aave V3 Pool", addr: AAVE_POOL, kind: "aave" },
   { id: "morpho", name: "Morpho vault", addr: MORPHO_VAULT, kind: "erc4626" },
+  // WARNING — euler is present to show the shape of a third venue, but its deposit leg
+  // is NOT proven. Through the ApproveAndCallBatchPermission template it reverts with an
+  // inner ERC-20 allowance error, from a batch byte-for-byte identical to the Morpho one
+  // that works. Cause unresolved. The live agent this was stripped from runs with euler
+  // removed from this array. Do not deploy funds against it until you have proven a real
+  // dispatch in both directions. See the skill file, "a fork test is not a dispatch".
   { id: "euler", name: "Euler vault", addr: EULER_VAULT, kind: "erc4626" },
 ];
 
