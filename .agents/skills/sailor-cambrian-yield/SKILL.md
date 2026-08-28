@@ -325,6 +325,22 @@ the agent loaded when the process started. Editing the file changes nothing abou
 currently ticking. This is obvious and it is still easy to spend a day watching a fixed agent
 run broken code.
 
+**A kernel revert is logged as `error`, not `dispatch_reverted`.** If you build alerting
+on `.sail/activity.jsonl`, this matters: a dispatch the kernel rejects appears with
+`"type":"error"`, and a handler watching only for `dispatch_reverted` or
+`dispatch_denied` never fires. The failure that most needs an alert is the one shape
+the obvious filter misses.
+
+Two related traps in the same file. The `target` on a failed deposit batch is the token
+being approved, not the venue — derive the venue from addresses in the reason text
+instead. And the reason can carry your RPC URL, API key included, so strip URLs before
+sending a reason anywhere.
+
+**Alert at the moment of failure, not on the next tick's reconcile.** Reconciliation
+runs at the start of a tick, so a failure notified from there is a full cadence late —
+on a daily schedule, a day late. Track what has already been alerted in a file rather
+than scanning back to the last tick marker, or a failure missed once is missed forever.
+
 **Watch the gas balance on the manager wallet.** It funds every dispatch. If it drains, the
 agent keeps ticking and keeps failing.
 
