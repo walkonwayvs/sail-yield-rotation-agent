@@ -264,6 +264,20 @@ The venue you are not currently in is exactly the one the next rotation moves to
 The fixture is block-specific, since accrual shifts the position between blocks. Regenerate
 before running.
 
+### A passing `mandate simulate` is not a proven venue
+
+`sailor mandate simulate` probes the permission off-chain and tells you whether it accepts
+the calls you want and rejects the ones you don't. That is a real gate and worth passing.
+It is also easy to read as the last check before you are safe, and it is not.
+
+Simulate answers whether the **permission** allows the call. It does not answer whether the
+**venue** accepts it. Those are different questions with different failure modes, and the
+second one is where the money is.
+
+On this build, simulate passed ten cases including four must-fail probes, against both
+permissions configured on-chain, before anything went live. The Euler deposit still
+reverted on the first real rotation. The permission said yes. The vault said no.
+
 ### And a fork test still is not a dispatch
 
 Everything above hardens the calldata. None of it proves the venue will accept that
@@ -367,6 +381,7 @@ Reported separately; noted here so nobody loses an hour to them.
 - [ ] Reconciler classifies by selector; a deposit is never labelled a rotation
 - [ ] Fork test replays the agent's own calldata and asserts on the amount received
 - [ ] Every venue covered on both legs, including ones you do not currently hold
+- [ ] `mandate simulate` passing — necessary, and not sufficient: it clears the permission, not the venue
 - [ ] Every venue taken through Shipyard end to end — deposit and withdraw, through the kernel
 - [ ] Every venue proven by a real dispatch in both directions, not only on a fork
 - [ ] Debug logging stripped
