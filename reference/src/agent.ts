@@ -34,12 +34,6 @@ const EULER_VAULT: Address = requireEnv("EULER_VAULT_ADDRESS") as Address; // ER
 const VENUES: { id: "aave" | "morpho" | "euler"; name: string; addr: Address; kind: "aave" | "erc4626" }[] = [
   { id: "aave", name: "Aave V3 Pool", addr: AAVE_POOL, kind: "aave" },
   { id: "morpho", name: "Morpho vault", addr: MORPHO_VAULT, kind: "erc4626" },
-  // WARNING — euler is present to show the shape of a third venue, but its deposit leg
-  // is NOT proven. Through the ApproveAndCallBatchPermission template it reverts with an
-  // inner ERC-20 allowance error, from a batch byte-for-byte identical to the Morpho one
-  // that works. Cause unresolved. The live agent this was stripped from runs with euler
-  // removed from this array. Do not deploy funds against it until you have proven a real
-  // dispatch in both directions. See the skill file, "a fork test is not a dispatch".
   { id: "euler", name: "Euler vault", addr: EULER_VAULT, kind: "erc4626" },
 ];
 
@@ -400,18 +394,27 @@ async function fetchRates(ctx: AgentContext): Promise<{ rates: VenueRates; best:
   // FIX 2: Cambrian's free tier 429s on rapid parallel calls — fetch the three endpoints
   // SEQUENTIALLY with a delay between them, retrying once on a 429.
   const headers: Record<string, string> = { "x-api-key": apiKey };
-  type Row = { apy: number; liquidityUsd: number };
+  type Row = { apy: number; liquidityUsd: number; addr: string };
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
   // Returns USDC rows for a venue. columns entries are objects {name,type} — map to .name.
-  const fetchRows = async (label: string, url: string, symbolCol: "underlyingSymbol" | "loanSymbol"): Promise<Row[]> => {
+  const fetchRows = async (label: string, url: string, symbolCol: "underlyingSymbol" | "loanSymbol", addrCol: string): Promise<Row[]> => {
     try {
-      // Retry once on a 429 (free-tier rate limit).
+      // Retry on a 429 (free-tier rate limit) or a thrown fetch error.
       let json: unknown;
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        const res = await fetch(url, { headers });
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        let res: Response;
+        try {
+          res = await fetch(url, { headers });
+        } catch (e) {
+          if (attempt < 3) {
+            await sleep(2000);
+            continue;
+          }
+          throw e;
+        }
         if (res.status === 429) {
-          if (attempt === 1) {
+          if (attempt < 3) {
             await sleep(2000);
             continue;
           }
@@ -432,11 +435,13 @@ async function fetchRates(ctx: AgentContext): Promise<{ rates: VenueRates; best:
       const iSym = colIdx(symbolCol);
       const iApy = colIdx("supplyApy");
       const iLiq = colIdx("availableLiquidityUsd");
+      const iAddr = colIdx(addrCol);
       const afterChain = block.data.filter((r) => iChain < 0 || Number(r[iChain]) === CHAIN_ID);
       const afterUsdc = iSym < 0 ? [] : afterChain.filter((r) => String(r[iSym]).toUpperCase() === "USDC");
       return afterUsdc.map((r) => ({
         apy: iApy >= 0 ? Number(r[iApy]) : NaN,
         liquidityUsd: iLiq >= 0 ? Number(r[iLiq]) : NaN,
+        addr: iAddr >= 0 ? String(r[iAddr]) : "",
       }));
     } catch (e) {
       ctx.log(`fetchRates: ${label} error: ${(e as Error).message.slice(0, 120)}`);
@@ -445,17 +450,28 @@ async function fetchRates(ctx: AgentContext): Promise<{ rates: VenueRates; best:
   };
 
   // Sequential with a delay between endpoints — Cambrian's free tier 429s on parallel calls.
-  const aaveRows = await fetchRows("aave", aaveUrl, "underlyingSymbol");
+  const aaveRows = await fetchRows("aave", aaveUrl, "underlyingSymbol", "poolAddress");
   await sleep(1200);
-  const morphoRows = await fetchRows("morpho", morphoUrl, "underlyingSymbol");
+  const morphoRows = await fetchRows("morpho", morphoUrl, "underlyingSymbol", "vaultAddress");
   await sleep(1200);
-  const eulerRows = await fetchRows("euler", eulerUrl, "loanSymbol");
+  const eulerRows = await fetchRows("euler", eulerUrl, "loanSymbol", "loanAddress");
 
-  // Pick each venue's best valid USDC row, applying both filters: skip if
-  // availableLiquidityUsd < 40000, skip if supplyApy > 0.30 (corrupt rows). A NaN apy or
-  // liquidity also disqualifies (fail-closed).
-  const pickBest = (rows: Row[]): Row | null => {
-    const finite = rows.filter((r) => Number.isFinite(r.apy) && Number.isFinite(r.liquidityUsd));
+  // Pick each venue's valid USDC row for the contract it can actually deposit into / holds:
+  // filter to the row whose address matches the target BEFORE the validity filters, so we
+  // never compare against a rate from a pool/vault we can't reach. Cambrian's poolAddress
+  // for Aave is the aToken (AAVE_A_TOKEN); vaultAddress for Morpho is the vault (MORPHO_VAULT).
+  // Euler's loanAddress is the loan token (USDC), not a vault address, so Euler skips the
+  // address filter and keeps its existing address-less selection. Also note that Cambrian's
+  // Euler endpoint has no vault-address column, so the euler rate cannot be filtered to the
+  // vault this agent deposits into. It is therefore a best-of-all-Euler-USDC-markets number,
+  // not the rate of the held position — the exact phantom-rate problem the skill file warns
+  // about. A second reason euler is disabled in the live agent. A missing address match
+  // returns null — fail-closed, same as an unreadable rate. Then: skip if
+  // availableLiquidityUsd < 40000, skip if supplyApy > 0.30 (corrupt rows); a NaN apy or
+  // liquidity also disqualifies.
+  const pickBest = (rows: Row[], target?: Address): Row | null => {
+    const afterAddr = target ? rows.filter((r) => r.addr && r.addr.toLowerCase() === target.toLowerCase()) : rows;
+    const finite = afterAddr.filter((r) => Number.isFinite(r.apy) && Number.isFinite(r.liquidityUsd));
     const afterLiq = finite.filter((r) => r.liquidityUsd >= MIN_LIQUIDITY_USD);
     const afterApy = afterLiq.filter((r) => r.apy <= MAX_SUPPLY_APY); // corrupt (>30%)
     let best: Row | null = null;
@@ -467,8 +483,8 @@ async function fetchRates(ctx: AgentContext): Promise<{ rates: VenueRates; best:
   const push = (id: "aave" | "morpho" | "euler", r: Row | null) => {
     if (r) rates.push({ id, apy: r.apy, liquidityUsd: r.liquidityUsd });
   };
-  push("aave", pickBest(aaveRows));
-  push("morpho", pickBest(morphoRows));
+  push("aave", pickBest(aaveRows, AAVE_A_TOKEN));
+  push("morpho", pickBest(morphoRows, MORPHO_VAULT));
   push("euler", pickBest(eulerRows));
 
   const best = rates.length ? rates.reduce((m, r) => (r.apy > m.apy ? r : m)) : null;
