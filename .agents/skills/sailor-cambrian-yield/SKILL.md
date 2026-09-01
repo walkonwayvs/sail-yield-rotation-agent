@@ -400,6 +400,38 @@ runs at the start of a tick, so a failure notified from there is a full cadence 
 on a daily schedule, a day late. Track what has already been alerted in a file rather
 than scanning back to the last tick marker, or a failure missed once is missed forever.
 
+### Alert on suspicious health, not only on errors
+
+Alerting built around failures catches the failures. It does not catch the mode that
+actually costs you money here, which is a tick that succeeds while being wrong.
+
+Both of the worst bugs in this build were silent. The phantom rate never failed anything:
+every fetch returned 200, every tick completed, and the agent held for a reason that read
+as correct. The unretried fetch error dropped a venue for a whole day, but never the same
+venue twice running, so a two-strikes rule never tripped. Neither produced a single alert.
+Both were found by reading logs.
+
+So add rules that watch for conditions which look healthy and are not:
+
+- **A spread of exactly `0.000pp` for several ticks in a row**, counted only when the best
+  venue differs from the current one. Between two different venues that is the phantom-rate
+  signature. Against itself it is just the agent sitting in the best venue, which is the
+  normal steady state and must not alert.
+- **The same venue unreadable for several consecutive ticks.** One failure is noise; a
+  streak means the feed is down for that venue and your comparison has quietly narrowed.
+- **No rotation for an unusually long stretch.** Prolonged stillness is either a correct
+  decision or a broken comparison, and nothing in a healthy-looking log distinguishes them.
+  A time bound forces the question.
+
+Make each of these fire once and then stay quiet until the condition clears. A stuck
+condition that alerts every day trains you to ignore the channel, and then the alert that
+matters scrolls past unread.
+
+Two caveats worth knowing. Streak counters held in memory reset when the process restarts,
+so a condition already in progress re-alerts once after every restart. And a rule that has
+never fired is a rule you have not tested — the failure alerts in this build were proven by
+replaying two real historical errors, and these were not.
+
 **Watch the gas balance on the manager wallet.** It funds every dispatch. If it drains, the
 agent keeps ticking and keeps failing.
 
@@ -431,5 +463,7 @@ Reported separately; noted here so nobody loses an hour to them.
 - [ ] `mandate simulate` passing — necessary, and not sufficient: it clears the permission, not the venue
 - [ ] Every venue taken through Shipyard end to end — deposit and withdraw, through the kernel
 - [ ] Every venue proven by a real dispatch in both directions, not only on a fork
+- [ ] Alerts cover silent-success failures, not only errors
+- [ ] Each alert fires once per episode, not every tick
 - [ ] Debug logging stripped
 - [ ] Service restarted after the last code change
