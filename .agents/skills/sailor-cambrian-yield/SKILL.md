@@ -98,12 +98,57 @@ not score it as zero.
 Pair the ceiling with a liquidity floor. A high rate on a vault with no exit liquidity is a
 position you cannot leave.
 
-### The free tier rate-limits parallel requests
+### The free tier rate-limits parallel requests, and 429 is not the only failure
 
-Three endpoints fetched concurrently returned `429` on two of the three. Sequential with
-roughly 1.2 seconds between calls, and one retry on a 429, works reliably.
+Three endpoints fetched concurrently returned `429` on two of the three. Fetch sequentially,
+roughly 1.2 seconds apart.
 
-This costs about three seconds per tick on a daily schedule. There is no reason to optimise it.
+Retry on a 429 **and on a thrown error**, up to three attempts. This matters more than it
+sounds. A connection-level failure makes `fetch()` throw rather than return a response, so a
+retry loop that only inspects `res.status` never sees it: the exception escapes the loop and
+the venue drops out for the whole tick with no second attempt. Ten of those appeared in one
+log across three days, each silently costing a venue for a day.
+
+Check the loop bound too. A guard written as `attempt === 1` makes the third attempt
+unreachable no matter how many the loop allows.
+
+With only two venues configured, one unretried failure leaves a single rate and no comparison
+is possible at all.
+
+### The rate you compare must belong to the contract you can deposit into
+
+The worst bug in this build, and the hardest to see.
+
+A feed endpoint returns every market for a protocol. Cambrian returned 64 USDC rows for Morpho
+on Base. The agent picked the highest-APY row that cleared its filters and compared that. But
+it only ever deposits into **one hardcoded vault address**. So the number it logged, compared,
+and made every decision on belonged to a vault it could not reach.
+
+It logged `morpho=10.37%` while the vault it actually held paid 4.28%.
+
+The failure is quiet and total. The phantom rate is both the "best" rate and the "current"
+rate, because both come from the same unfiltered pick. So the spread is exactly `0.000pp`,
+every tick, forever, and the agent can never rotate. Six days of logs that read as a healthy
+agent correctly deciding to hold.
+
+Filter by address before picking, not after:
+
+```ts
+const iVault = colNames.indexOf("vaultAddress");   // Morpho
+const iPool  = colNames.indexOf("poolAddress");    // Aave
+rows = rows.filter((r) => addrEq(r[iVault], venue.addr));
+```
+
+Two traps in that one line. Cambrian's `poolAddress` on the Aave endpoint is the **aToken**,
+not the Pool contract, so match against the aToken. And a row matching nothing must fail closed
+as an unreadable rate, never as zero, which would look like a real venue paying nothing.
+
+**A spread of exactly `0.000pp` on every tick is a signal, not a coincidence.** If the best
+rate always equals the current rate to the last decimal, the agent is almost certainly
+comparing a number against itself.
+
+This is the same shape as the shares-versus-assets bug below: the agent reads one thing and
+acts on another, and nothing in the log looks wrong.
 
 ### If you cannot read the rate on the venue you are *in*, skip the tick
 
@@ -373,7 +418,9 @@ Reported separately; noted here so nobody loses an hour to them.
 
 - [ ] Column names extracted from column *objects*, not compared as strings
 - [ ] Rate ceiling and liquidity floor applied; `NaN` disqualifies
-- [ ] Feed endpoints fetched sequentially with a retry on 429
+- [ ] Feed endpoints fetched sequentially, retrying on thrown errors as well as 429
+- [ ] Every rate filtered to the exact contract the agent can deposit into
+- [ ] Spread verified capable of a non-zero value
 - [ ] Unreadable rate on the **current** venue skips the tick
 - [ ] Position read in assets via `convertToAssets`, not shares
 - [ ] `withdraw` used, never `redeem`; cap configured in asset terms
