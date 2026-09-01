@@ -159,6 +159,59 @@ const ERC4626_CONVERT_TO_ASSETS_ABI = [
   },
 ] as const;
 
+// ── Discord notifications (sailor-extend pattern) ────────────────────────────
+// Fire-and-forget alerts for events an operator must see: persistent rate-fetch failures,
+// zero-spread self-compare, and prolonged stillness. Silently disabled when
+// DISCORD_WEBHOOK_URL is not set. Every send is wrapped in try/catch so a notification
+// failure can never throw into tick() or stop a dispatch.
+//
+// Read from process.env, NOT ctx.env: ctx.env is the per-chain strategy map
+// (.sail/env/<slug>.json), while DISCORD_WEBHOOK_URL is an infrastructure secret that lives
+// in .sail/.env.local alongside the RPC URL and passphrase (both process-env, not ctx.env).
+async function notify(ctx: AgentContext, message: string): Promise<void> {
+  const webhook = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhook) return;
+  try {
+    await fetch(webhook, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: `⛵ sail-agent — ${message}` }),
+    });
+  } catch {
+    // a lost alert must not stop a dispatch
+  }
+}
+
+// Alert thresholds (operational, not strategy-spec).
+const RATE_FAIL_ALERT_TICKS = 3; // consecutive unreadable-rate ticks before alerting
+const ZERO_SPREAD_ALERT_TICKS = 3; // consecutive 0.000pp spreads before alerting
+const STALE_VENUE_SEC = 14 * 24 * 60 * 60; // 14 d holding one venue → stillness alert
+
+// Tracks consecutive-tick failure counts per venue, so we can alert when a venue's rate
+// feed is persistently down. A single transient failure is silent; three in a row means
+// the venue's rate is persistently unreadable — notify. Reset on a total fetch failure or
+// position-read failure (different paths that break the per-venue streak).
+let failedStreak: Map<string, number> = new Map();
+
+// Tracks consecutive ticks where the best-vs-current spread was exactly 0.000pp — the
+// signature of comparing a rate against itself (a phantom rate from a vault the agent
+// cannot reach, or two venues reporting an identical number). Three in a row → notify.
+// Preserved across ticks that skip before computing a spread (no comparison is not a
+// non-zero spread); reset the moment a real non-zero spread is seen.
+let zeroSpreadStreak = 0;
+
+// ── Once-and-suppress arming for the three operational alerts ───────────────
+// Each alert fires once, then stays quiet until its condition clears, then re-arms so a
+// recurrence alerts again. Re-arming is driven by the SAME condition that clears the
+// streak, so the two never drift apart.
+//   zeroSpreadArmed  — cleared by a non-zero spread (which also resets the streak).
+//   failedArmed      — per venue; cleared when that venue's rate is successfully read.
+//   stillnessArmed   — cleared when the held venue is no longer past STALE_VENUE_SEC
+//                      (i.e. a confirmed rotation moved heldSince forward).
+let zeroSpreadArmed = true;
+let failedArmed: Map<string, boolean> = new Map();
+let stillnessArmed = true;
+
 // ── Memory ledger (.sail/memory/ledger.jsonl) — see sailor-memory skill ─────
 // Append-only, chain-reconciled record of every tick. A fresh process recovers its own
 // history by reading this file — the cadence guard below reads last CONFIRMED rotation
@@ -203,6 +256,32 @@ const readLastRotationSec = (): number => {
     try {
       const e = JSON.parse(lines[i]) as LedgerEntry;
       if (e.kind === "acted" && e.outcome === "confirmed" && e.action === "rotate") return e.ts;
+    } catch {
+      // a malformed line is skipped, never fatal
+    }
+  }
+  return 0;
+};
+
+// The timestamp the SMA started holding its CURRENT venue — the last CONFIRMED rotation's
+// ts (same source as the cadence guard), or, if it has never rotated, the first ledger
+// entry's ts (when the agent began tracking). Used by the 14-day stillness alert: nothing
+// in the loop distinguishes "correctly holding" from "stuck comparing a phantom rate", so
+// prolonged stillness is surfaced for a human to disambiguate. Returns 0 when the ledger
+// is empty (fresh install, nothing to alert on).
+const readHeldSinceSec = (): number => {
+  const lines = readLines(LEDGER_PATH);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const e = JSON.parse(lines[i]) as LedgerEntry;
+      if (e.kind === "acted" && e.outcome === "confirmed" && e.action === "rotate") return e.ts;
+    } catch {
+      // a malformed line is skipped, never fatal
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    try {
+      return (JSON.parse(lines[i]) as LedgerEntry).ts;
     } catch {
       // a malformed line is skipped, never fatal
     }
@@ -628,11 +707,34 @@ export const agent: Agent = {
     try {
       ({ rates, best } = await fetchRates(ctx));
     } catch (e) {
+      failedStreak = new Map(); // total fetch failure — different path, breaks the per-venue streak
       const reason = `rates unavailable: ${(e as Error).message.slice(0, 140)}`;
       ctx.log(`${reason} — skipping`);
+      void notify(ctx, `tick skipped — ${reason}`);
       appendLedger({ ts: ctx.timestamp, block: Number(ctx.blockNumber), chainId: ctx.chainId, kind: "skipped", reason });
       return [];
     }
+
+    // ── Consecutive-failure detection. A venue missing from `rates` failed this tick
+    // (network error or no valid rows after filtering both count). If it has failed
+    // RATE_FAIL_ALERT_TICKS ticks running (this tick included), the feed is persistently
+    // down — notify once, then suppress until the venue reads successfully. A single
+    // transient failure is silent; the total-throw path above resets the streak. The
+    // previous tick's counts are in failedStreak. Venues that read OK this tick re-arm.
+    const rateIds = new Set(rates.map((r) => r.id));
+    const thisTickFailed = new Set(VENUES.map((v) => v.id).filter((id) => !rateIds.has(id)));
+    const nextStreak = new Map<string, number>();
+    for (const id of thisTickFailed) {
+      const count = (failedStreak.get(id) ?? 0) + 1;
+      nextStreak.set(id, count);
+      if (count >= RATE_FAIL_ALERT_TICKS && failedArmed.get(id) !== false) {
+        failedArmed.set(id, false); // suppress until the venue reads successfully
+        void notify(ctx, `rate fetch failed ${count} ticks in a row — ${id}`);
+      }
+    }
+    for (const id of rateIds) failedArmed.set(id, true); // successful read re-arms
+    failedStreak = nextStreak;
+
     if (!best || rates.length === 0) {
       const reason = "no valid USDC market after filters (liquidity<40k / apy>0.30 / fetch empty)";
       ctx.log(`${reason} — skipping`);
@@ -643,8 +745,24 @@ export const agent: Agent = {
     ctx.log(`rates: ${rates.map((r) => `${r.id}=${(r.apy * 100).toFixed(2)}%`).join(", ")} — best ${best.id} ${(best.apy * 100).toFixed(2)}%`);
 
     // ── Read position (terrain). Idle = raw USDC, no venue balance.
-    const pos = await readPosition(ctx);
-    const usdcBal = await ctx.read.balance(USDC);
+    // RPC reads (balanceOf / convertToAssets / ctx.read.balance) can time out. A thrown
+    // read here used to propagate out of tick() and error the strategy with NO ledger entry
+    // — the exact failure mode the Cambrian catch above was written to prevent. Handle it
+    // the same way: log, write a "skipped" ledger entry, notify, and return no dispatches.
+    // Never throw out of tick() for a read failure.
+    let pos: Position;
+    let usdcBal: bigint;
+    try {
+      pos = await readPosition(ctx);
+      usdcBal = await ctx.read.balance(USDC);
+    } catch (e) {
+      failedStreak = new Map(); // a read failure is not a per-venue rate streak
+      const reason = `position read failed: ${(e as Error).message.slice(0, 140)}`;
+      ctx.log(`${reason} — skipping`);
+      void notify(ctx, `tick skipped — ${reason}`);
+      appendLedger({ ts: ctx.timestamp, block: Number(ctx.blockNumber), chainId: ctx.chainId, kind: "skipped", reason });
+      return [];
+    }
 
     // ── Skip sentinel: the SMA holds balances in multiple venues at once. We never want
     // to fragment or withdraw from the wrong one, so we log + skip and wait for manual
@@ -692,6 +810,23 @@ export const agent: Agent = {
       return [];
     }
 
+    // ── Stillness alert. Prolonged stillness — holding one venue with no rotation — is
+    // either a correct decision or a broken comparison, and nothing in the loop
+    // distinguishes them. Surface it once after STALE_VENUE_SEC, then suppress until the
+    // held venue is no longer stale (a confirmed rotation moves heldSince forward, which
+    // re-arms). heldSince is the last confirmed rotation's ts (or the first ledger entry if
+    // the agent has never rotated). A fresh ledger (heldSince 0) never alerts.
+    const heldSince = readHeldSinceSec();
+    const stale = heldSince > 0 && ctx.timestamp - heldSince >= STALE_VENUE_SEC;
+    if (stale) {
+      if (stillnessArmed) {
+        stillnessArmed = false; // suppress until no longer stale
+        void notify(ctx, `held ${current.id} ${Math.floor((ctx.timestamp - heldSince) / 86400)}d — no rotation (check rates)`);
+      }
+    } else {
+      stillnessArmed = true; // re-arm: a rotation moved heldSince forward (or never stale)
+    }
+
     const lastRotation = readLastRotationSec();
     const sinceLast = ctx.timestamp - lastRotation;
     if (lastRotation > 0 && sinceLast < ROTATION_COOLDOWN_SEC) {
@@ -702,6 +837,22 @@ export const agent: Agent = {
     }
 
     const spread = best.apy - currentRate.apy;
+    // ── Zero-spread alert. A spread of exactly 0.000pp between two DIFFERENT venues is the
+    // signature of comparing a rate against itself — a phantom rate from a vault the agent
+    // cannot reach, or two venues reporting an identical number. Three consecutive such
+    // spreads → notify once, then suppress until a real non-zero spread is seen (which
+    // re-arms). A zero spread with best.id === current.id is the agent correctly holding the
+    // best venue — not a phantom, never counted. Repeatedly escaped detection for days.
+    if (spread === 0 && best.id !== current.id) {
+      zeroSpreadStreak += 1;
+      if (zeroSpreadStreak >= ZERO_SPREAD_ALERT_TICKS && zeroSpreadArmed) {
+        zeroSpreadArmed = false; // suppress until a non-zero spread re-arms
+        void notify(ctx, `spread 0.000pp ${zeroSpreadStreak} ticks in a row — possible phantom-rate self-compare`);
+      }
+    } else {
+      zeroSpreadStreak = 0;
+      zeroSpreadArmed = true; // re-arm: a real non-zero spread (or self-hold) was seen
+    }
     if (best.id === current.id || spread < MIN_SPREAD_TO_ROTATE) {
       const reason = `no rotate: best ${best.id} ${(best.apy * 100).toFixed(2)}% vs current ${current.id} ${(currentRate.apy * 100).toFixed(2)}% (spread ${(spread * 100).toFixed(3)}pp < ${MIN_SPREAD_TO_ROTATE * 100}pp)`;
       ctx.log(`${reason} — skipping`);
