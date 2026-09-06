@@ -432,6 +432,31 @@ so a condition already in progress re-alerts once after every restart. And a rul
 never fired is a rule you have not tested — the failure alerts in this build were proven by
 replaying two real historical errors, and these were not.
 
+**A laptop is not an unattended host, and the difference is not obvious.** `sailor service
+install` sets up a systemd user service on whatever machine you run it on. That works, and
+on a laptop it works in a way that quietly breaks two things.
+
+When the machine sleeps, the network goes with it. The runner's own block fetch throws
+before your `tick()` is ever called, the service dies, systemd restarts it, and the restart
+fires an immediate tick. On this build that produced 18 restarts in six days and 40 ticks
+where a daily interval predicts about 11. Nothing was lost and the position kept earning,
+so the log reads as a working agent.
+
+Two consequences worth planning around:
+
+- **Those crashes never reach `.sail/activity.jsonl`.** They happen above your code, so
+  nothing you write can catch or record them. Any alerting built on the activity log has a
+  blind spot precisely where a laptop fails most often.
+- **In-memory streak counters reset on every restart.** A rule that waits for three
+  consecutive ticks cannot fire if the process rarely survives three ticks. The
+  suspicious-health alerts described above are effectively dead on hardware that sleeps
+  unless the counters are persisted to disk the way the notified-failure record is.
+
+None of this argues against running locally — self-custody on your own machine is the
+point of the whole setup. It argues for knowing which machine. A cheap always-on box keeps
+the keys under your control and makes "unattended" true. If you stay on a laptop, persist
+every counter your alerting depends on, and do not assume silence means healthy.
+
 **Watch the gas balance on the manager wallet.** It funds every dispatch. If it drains, the
 agent keeps ticking and keeps failing.
 
@@ -465,5 +490,7 @@ Reported separately; noted here so nobody loses an hour to them.
 - [ ] Every venue proven by a real dispatch in both directions, not only on a fork
 - [ ] Alerts cover silent-success failures, not only errors
 - [ ] Each alert fires once per episode, not every tick
+- [ ] Streak counters persisted to disk, not held in memory across restarts
+- [ ] Execution host chosen deliberately — a sleeping laptop restarts more than it ticks
 - [ ] Debug logging stripped
 - [ ] Service restarted after the last code change
