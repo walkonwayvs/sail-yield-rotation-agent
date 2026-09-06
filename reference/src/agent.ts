@@ -212,6 +212,48 @@ let zeroSpreadArmed = true;
 let failedArmed: Map<string, boolean> = new Map();
 let stillnessArmed = true;
 
+// ── Persistent alert state (.sail/memory/alert-state.json) ──────────────────
+// The streak counters and arm flags above are held in memory and reset on every process
+// restart. This machine restarted the service 18 times in six days, so the 3-tick streak
+// alerts never reached their threshold and were effectively dead. Persist them to disk
+// the same way notified-failures.jsonl survives restarts — load on tick start, save after
+// every mutation — so a streak accumulates across restarts, not just across ticks.
+const ALERT_STATE_PATH = path.join(process.cwd(), ".sail", "memory", "alert-state.json");
+
+type AlertState = {
+  failedStreak: Record<string, number>;
+  zeroSpreadStreak: number;
+  zeroSpreadArmed: boolean;
+  failedArmed: Record<string, boolean>;
+  stillnessArmed: boolean;
+};
+
+const loadAlertState = (): void => {
+  try {
+    const raw = fs.readFileSync(ALERT_STATE_PATH, "utf-8");
+    const s = JSON.parse(raw) as AlertState;
+    failedStreak = new Map(Object.entries(s.failedStreak ?? {}));
+    zeroSpreadStreak = s.zeroSpreadStreak ?? 0;
+    zeroSpreadArmed = s.zeroSpreadArmed ?? true;
+    failedArmed = new Map(Object.entries(s.failedArmed ?? {}));
+    stillnessArmed = s.stillnessArmed ?? true;
+  } catch {
+    // missing or corrupt file — leave the in-memory defaults in place
+  }
+};
+
+const saveAlertState = (): void => {
+  const state: AlertState = {
+    failedStreak: Object.fromEntries(failedStreak),
+    zeroSpreadStreak,
+    zeroSpreadArmed,
+    failedArmed: Object.fromEntries(failedArmed),
+    stillnessArmed,
+  };
+  fs.mkdirSync(path.dirname(ALERT_STATE_PATH), { recursive: true });
+  fs.writeFileSync(ALERT_STATE_PATH, `${JSON.stringify(state)}\n`);
+};
+
 // ── Memory ledger (.sail/memory/ledger.jsonl) — see sailor-memory skill ─────
 // Append-only, chain-reconciled record of every tick. A fresh process recovers its own
 // history by reading this file — the cadence guard below reads last CONFIRMED rotation
@@ -692,6 +734,10 @@ export const agent: Agent = {
   async tick(ctx: AgentContext): Promise<Dispatch[]> {
     ctx.log(`tick — block ${ctx.blockNumber}, sma ${ctx.safe}`);
 
+    // Recover the streak counters and arm flags a PRIOR process/tick left on disk, so a
+    // restart mid-streak does not reset the 3-tick alert thresholds to zero.
+    loadAlertState();
+
     // Reconcile first — catch the ledger up on any dispatch a PRIOR tick submitted that has
     // since confirmed or reverted. Doubles as this tick's memory read: the cooldown guard
     // below reads the ledger this just brought current.
@@ -708,6 +754,7 @@ export const agent: Agent = {
       ({ rates, best } = await fetchRates(ctx));
     } catch (e) {
       failedStreak = new Map(); // total fetch failure — different path, breaks the per-venue streak
+      saveAlertState();
       const reason = `rates unavailable: ${(e as Error).message.slice(0, 140)}`;
       ctx.log(`${reason} — skipping`);
       void notify(ctx, `tick skipped — ${reason}`);
@@ -734,6 +781,7 @@ export const agent: Agent = {
     }
     for (const id of rateIds) failedArmed.set(id, true); // successful read re-arms
     failedStreak = nextStreak;
+    saveAlertState();
 
     if (!best || rates.length === 0) {
       const reason = "no valid USDC market after filters (liquidity<40k / apy>0.30 / fetch empty)";
@@ -757,6 +805,7 @@ export const agent: Agent = {
       usdcBal = await ctx.read.balance(USDC);
     } catch (e) {
       failedStreak = new Map(); // a read failure is not a per-venue rate streak
+      saveAlertState();
       const reason = `position read failed: ${(e as Error).message.slice(0, 140)}`;
       ctx.log(`${reason} — skipping`);
       void notify(ctx, `tick skipped — ${reason}`);
@@ -826,6 +875,7 @@ export const agent: Agent = {
     } else {
       stillnessArmed = true; // re-arm: a rotation moved heldSince forward (or never stale)
     }
+    saveAlertState();
 
     const lastRotation = readLastRotationSec();
     const sinceLast = ctx.timestamp - lastRotation;
@@ -853,6 +903,7 @@ export const agent: Agent = {
       zeroSpreadStreak = 0;
       zeroSpreadArmed = true; // re-arm: a real non-zero spread (or self-hold) was seen
     }
+    saveAlertState();
     if (best.id === current.id || spread < MIN_SPREAD_TO_ROTATE) {
       const reason = `no rotate: best ${best.id} ${(best.apy * 100).toFixed(2)}% vs current ${current.id} ${(currentRate.apy * 100).toFixed(2)}% (spread ${(spread * 100).toFixed(3)}pp < ${MIN_SPREAD_TO_ROTATE * 100}pp)`;
       ctx.log(`${reason} — skipping`);
