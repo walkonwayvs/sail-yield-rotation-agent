@@ -423,14 +423,25 @@ So add rules that watch for conditions which look healthy and are not:
   decision or a broken comparison, and nothing in a healthy-looking log distinguishes them.
   A time bound forces the question.
 
+One note on what an alert should say. The stillness message that fired here read
+`held morpho 14d — no rotation (check rates)`, and holding was the correct decision: the
+held venue was paying more than the alternative the whole time. An alert of this kind is
+not a fault report. It is a prompt to look, and it should be worded so you read it that way
+at a glance, or you will start dismissing it.
+
 Make each of these fire once and then stay quiet until the condition clears. A stuck
 condition that alerts every day trains you to ignore the channel, and then the alert that
 matters scrolls past unread.
 
 Two caveats worth knowing. Streak counters held in memory reset when the process restarts,
-so a condition already in progress re-alerts once after every restart. And a rule that has
-never fired is a rule you have not tested — the failure alerts in this build were proven by
-replaying two real historical errors, and these were not.
+so a condition already in progress re-alerts once after every restart — persist them to disk
+if the host restarts often.
+
+And a rule that has never fired is a rule you have not tested. The failure alerts in this
+build were proven by replaying two real historical errors. Of the three above, only the
+stillness rule has since fired on a live condition: fourteen days holding one venue, one
+message, then correctly silent. The other two remain unexercised, which is worth saying out
+loud rather than assuming they work.
 
 **A laptop is not an unattended host, and the difference is not obvious.** `sailor service
 install` sets up a systemd user service on whatever machine you run it on. That works, and
