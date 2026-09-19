@@ -98,9 +98,9 @@ npx tsx scripts/gen-fixtures.ts
 cd contracts && forge test --match-contract YieldRotateForkTest -vvv
 ```
 
-## Sailor issues encountered (v2.2.1)
+## Sailor issues encountered (v2.2.1, all fixed in v2.3.0)
 
-Reported to Sail separately; noted here so nobody loses an hour.
+All three were confirmed and fixed by Sail in v2.3.0 (issues #225, #226, #227). Left here because anyone on an older version will still hit them.
 
 - `sailor service install --chain <id>` writes a systemd unit that runs `sailor run --chain <id>`,
   but `run` only accepts `--chains`. The installer generates a permanently broken service.
