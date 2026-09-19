@@ -1,6 +1,6 @@
 ---
 name: sailor-cambrian-yield
-description: "Build a USDC yield-rotation agent that holds a position in whichever lending venue pays the best supply rate, using an off-chain rate feed (Cambrian) rather than on-chain reads. Covers the read → decide → act loop for position management: detecting where the position currently sits, comparing rates across venues, and rotating with a spread threshold and a cadence guard. Load this when the strategy is yield / earn / APY rotation across Aave v3, Morpho, Euler or similar ERC-4626 venues, and when rate data comes from a third-party HTTP API. Assumes the mandate is already planned — the permissions themselves are sailor-template-approve-batch (entry) and sailor-template-withdraw (exit)."
+description: "Build a USDC yield-rotation agent that holds a position in whichever lending venue pays the best supply rate, using an off-chain rate feed (Cambrian) rather than on-chain reads. Covers the read → decide → act loop for position management: detecting where the position currently sits, comparing rates across venues, and rotating with a spread threshold and a cadence guard. Load this when the strategy is yield / earn / APY rotation across Aave v3, Morpho, Euler or similar ERC-4626 venues, and when rate data comes from a third-party HTTP API. Assumes the mandate is already planned — the permissions themselves are the approve-batch (entry) and withdraw (exit) shared templates, documented in sailor-templates/references/."
 compatibility: A Sailor project (`@sail.money/sailor/sdk`, `sailor` CLI) with ApproveAndCallBatchPermission and WithdrawPermission both registered AND configured. Written against sailor v2.2.1 with WithdrawPermission v2 on Base (8453) with Aave v3, Morpho and Euler as venues, and Cambrian as the rate feed. The venue and feed specifics are replaceable; the failure modes are not.
 ---
 
@@ -11,8 +11,8 @@ with a strategy spec whose shape is: *hold one position, in one venue, chosen by
 comes from outside the chain.*
 
 This skill is the agent loop for that shape. It does not cover the permissions — entry is
-[`sailor-template-approve-batch`](../sailor-template-approve-batch/SKILL.md), exit is
-[`sailor-template-withdraw`](../sailor-template-withdraw/SKILL.md), and a rotating strategy
+[approve-batch](../sailor-templates/references/approve-batch.md), exit is
+[withdraw](../sailor-templates/references/withdraw.md), and a rotating strategy
 needs both, registered and configured.
 
 Everything below was hit and verified during a live build, not reasoned about in advance.
